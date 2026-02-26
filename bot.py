@@ -1,207 +1,210 @@
-import telebot
-from telebot import types
-import re
-import time
-import threading
+import asyncio
+import logging
 import random
-from datetime import datetime, timedelta
+import json
 import os
+import re
+from datetime import datetime
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 
-# --- 1. ASOSIY SOZLAMALAR ---
-TOKEN = '8609558089:AAExgvs1_XR5jlj9RGC55zZStvc7nV_Z6hE' #
-ADMIN_ID = 8299021738  #
-ADMIN_KARTA = "9860 6067 5582 9722" #
-bot = telebot.TeleBot(TOKEN)
+# --- 1. SOZLAMALAR ---
+TOKEN = '8609558089:AAExgvs1_XR5jlj9RGC55zZStvc7nV_Z6hE'
+ADMIN_ID = 8299021738
+ADMIN_KARTA = "9860 6067 5582 9722"
+DB_FILE = "bank_data.json"
 
-# Ma'lumotlar bazasi (Vaqtinchalik xotira)
-users = {}
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
-def get_user(uid):
+# --- 2. MA'LUMOTLAR BAZASI ---
+def load_db():
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+def save_db(data):
+    with open(DB_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+users = load_db()
+
+def get_u(uid):
+    uid = str(uid)
     if uid not in users:
         users[uid] = {
-            'reg': False, 
-            'name': '', 
-            'phone': '', 
-            'balance': 0, 
-            'loan': 0, 
-            'loan_time': None, 
-            'last_scare': None
+            'name': '', 'phone': '', 'reg': False, 
+            'balance': 0.0, 'loan': 0.0, 'loan_time': None
         }
     return users[uid]
 
-# --- 2. QARZ VA PENYA HISOB-KITOBI ---
-def calculate_loan(uid):
-    user = get_user(uid)
-    penya = 0
-    if user['loan'] > 0 and user['loan_time']:
-        passed = datetime.now() - user['loan_time']
-        hours = int(passed.total_seconds() // 3600)
-        if hours > 12:
-            # 12 soatdan keyin har soat uchun 5% penya
-            penya = int(user['loan'] * 0.05 * (hours - 12))
-    total_to_pay = user['loan'] + penya
-    return user['loan'], penya, total_to_pay
+# --- 3. HISOB-KITOB VA PENYA ---
+def get_loan_status(uid):
+    u = get_u(uid)
+    if not u['loan'] or u['loan'] <= 0: return 0.0, 0.0, 0.0
+    l_time = datetime.strptime(u['loan_time'], "%Y-%m-%d %H:%M:%S")
+    passed_hours = (datetime.now() - l_time).total_seconds() / 3600
+    penya = 0.0
+    if passed_hours > 12:
+        # Har soatga 5% penya (Shiddatli o'sish)
+        penya = round(u['loan'] * 0.05 * (passed_hours - 12), 2)
+    return float(u['loan']), penya, round(u['loan'] + penya, 2)
 
-# --- 3. AVTOMATIK OGOHLANTIRISH TIZIMI ---
-def scare_system():
-    while True:
-        now = datetime.now()
-        for uid, u in users.items():
-            if u['loan'] > 0 and u['loan_time']:
-                if (now - u['loan_time']) > timedelta(hours=12):
-                    if not u['last_scare'] or (now - u['last_scare']) > timedelta(hours=2):
-                        try:
-                            bot.send_message(uid, "‼️ DIQQAT! QARZ MUDDATI O'TDI!\n\nPenya hisoblanmoqda. Iltimos, qarzni to'lang!")
-                            u['last_scare'] = now
-                        except:
-                            pass
-        time.sleep(60)
-
-threading.Thread(target=scare_system, daemon=True).start()
-
-# --- 4. ASOSIY MENYU ---
+# --- 4. KLAVIATURALAR ---
 def main_menu():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row("🎰 777 O'yini", "💰 Balans")
-    markup.row("💳 Depozit qilish", "💸 Qarz olish")
-    markup.row("🏦 Qarzni to'lash", "ℹ️ Ma'lumot")
-    markup.row("📤 Pul yechish")
-    return markup
+    builder = ReplyKeyboardBuilder()
+    builder.row(types.KeyboardButton(text="🎰 OMADLI O'YIN"), types.KeyboardButton(text="💰 BALANS"))
+    builder.row(types.KeyboardButton(text="✨ TEZKOR QARZ OLISH ✨"))
+    builder.row(types.KeyboardButton(text="💳 DEPOZIT"), types.KeyboardButton(text="🏦 QARZNI YOPISH"))
+    return builder.as_markup(resize_keyboard=True)
 
-# --- 5. RO'YXATDAN O'TISH (FAQAT TUGMA ORQALI RAQAM OLISH) ---
-@bot.message_handler(commands=['start'])
-def start_cmd(message):
-    user = get_user(message.chat.id)
-    if not user['reg']:
-        msg = bot.send_message(message.chat.id, "👋 Xush kelibsiz! Ro'yxatdan o'tish uchun Ism va Familiyangizni kiriting:")
-        bot.register_next_step_handler(msg, reg_name)
+# --- 5. RO'YXATDAN O'TISH (QAT'IY TIZIM) ---
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message):
+    u = get_u(message.from_user.id)
+    if not u['reg']:
+        await message.answer("🏛 **MARKAZIY BANK TIZIMI**\n\nXizmatlardan foydalanish uchun Familiya va Ismingizni yozing:")
     else:
-        bot.send_message(message.chat.id, "Asosiy menyu:", reply_markup=main_menu())
+        await message.answer("Xush kelibsiz! Bank xizmatlaridan foydalanishingiz mumkin.", reply_markup=main_menu())
 
-def reg_name(message):
-    get_user(message.chat.id)['name'] = message.text
-    # Foydalanuvchi raqamini qo'lda yozolmaydi, faqat tugma orqali
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    button = types.KeyboardButton(text="📱 Telefon raqamni yuborish", request_contact=True)
-    markup.add(button)
-    msg = bot.send_message(message.chat.id, f"Rahmat, {message.text}!\n\nEndi pastdagi tugmani bosib, raqamingizni tasdiqlang:", reply_markup=markup)
-    bot.register_next_step_handler(msg, reg_phone)
-
-def reg_phone(message):
-    user = get_user(message.chat.id)
-    if message.contact: # Faqat tugma bosilsa ishlaydi
-        user['phone'] = message.contact.phone_number
-        user['reg'] = True
-        bot.send_message(message.chat.id, "✅ Muvaffaqiyatli ro'yxatdan o'tdingiz!", reply_markup=main_menu())
-        bot.send_message(ADMIN_ID, f"🆕 YANGI AZO:\n👤 {user['name']}\n📞 {user['phone']}\n🆔 {message.chat.id}")
+@dp.message(lambda m: not get_u(m.from_user.id)['reg'] and not m.contact)
+async def process_reg(message: types.Message):
+    uid = str(message.from_user.id)
+    if not users[uid]['name']:
+        users[uid]['name'] = message.text
+        save_db(users)
+        
+        builder = ReplyKeyboardBuilder()
+        builder.row(types.KeyboardButton(text="📱 RAQAMNI TASDIQLASH", request_contact=True))
+        await message.answer(
+            f"Rahmat, {message.text}!\nEndi pastdagi tugmani bosib telefon raqamingizni tasdiqlang.\n\n"
+            "⚠️ *Eslatma: Raqamni qo'lda yozish taqiqlanadi!*", 
+            reply_markup=builder.as_markup(resize_keyboard=True), parse_mode="Markdown"
+        )
     else:
-        # Agar raqamni o'zi yozishga harakat qilsa
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        button = types.KeyboardButton(text="📱 Telefon raqamni yuborish", request_contact=True)
-        markup.add(button)
-        msg = bot.send_message(message.chat.id, "⚠️ Xato! Faqat pastdagi tugmani bosing:", reply_markup=markup)
-        bot.register_next_step_handler(msg, reg_phone)
+        await message.answer("⚠️ Iltimos, pastdagi tugmani bosing!")
 
-# --- 6. O'YIN TIZIMI (25% YUTUQ VA 10K-130K LIMIT) ---
-@bot.message_handler(func=lambda m: m.text == "🎰 777 O'yini")
-def game_777(message):
-    user = get_user(message.chat.id)
-    bet = 50000 
-    if user['balance'] < bet:
-        return bot.send_message(message.chat.id, f"⚠️ Balans yetarli emas (Tikish: {bet:,} UZS).")
-    
-    user['balance'] -= bet
-    bot.send_message(message.chat.id, "🎰 O'yin ketmoqda...")
-    bot.send_dice(message.chat.id, emoji='🎰')
-    time.sleep(4)
-    
-    # 3 ta yutqaziq : 1 ta yutuq
-    is_winner = random.choice([False, False, False, True])
-    
-    if is_winner:
-        win_amt = random.randint(10000, 130000) # Siz aytgan yutuq limitlari
-        user['balance'] += win_amt
-        bot.send_message(message.chat.id, f"🎉 TABRIKLAYMIZ!\n✅ Yutuq: +{win_amt:,} UZS\n💵 Balans: {user['balance']:,} UZS")
+@dp.message(F.contact)
+async def contact_handler(message: types.Message):
+    uid = str(message.from_user.id)
+    if message.contact.user_id == message.from_user.id:
+        users[uid]['phone'] = message.contact.phone_number
+        users[uid]['reg'] = True
+        save_db(users)
+        await message.answer("✅ Shaxsingiz tasdiqlandi. Kredit limiti faollashtirildi.", reply_markup=main_menu())
+        await bot.send_message(ADMIN_ID, f"🔔 YANGI MIJOZ: {users[uid]['name']} | {users[uid]['phone']}")
     else:
-        bot.send_message(message.chat.id, f"😟 Yutqazdingiz.\n❌ -{bet:,} UZS\n💵 Balans: {user['balance']:,} UZS")
+        await message.answer("❌ Faqat o'zingizning kontaktingizni yuboring!")
 
-# --- 7. QARZ OLISH ---
-@bot.message_handler(func=lambda m: m.text == "💸 Qarz olish")
-def loan_init(message):
-    user = get_user(message.chat.id)
-    if user['loan'] > 0:
-        return bot.send_message(message.chat.id, "❌ To'lanmagan qarzingiz bor!")
+# --- 6. JOZIBADOR QARZ OLISH ---
+@dp.message(F.text == "✨ TEZKOR QARZ OLISH ✨")
+async def loan_offer(message: types.Message):
+    u = get_u(message.from_user.id)
+    if u['loan'] > 0:
+        return await message.answer("❌ Sizda to'lanmagan qarz mavjud. Avvalgisini yopishingiz shart!")
     
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("✅ Tasdiqlayman", callback_data="l_yes"),
-               types.InlineKeyboardButton("❌ Bekor qilish", callback_data="l_no"))
-    bot.send_message(message.chat.id, "⚠️ QARZ SHARTLARI:\n• 12 soat foizsiz\n• Keyin har soat +5% penya\n\nRozimisiz?", reply_markup=markup)
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="💰 500,000 UZS", callback_data="get_500"))
+    kb.row(types.InlineKeyboardButton(text="💰 1,000,000 UZS", callback_data="get_1000"))
+    kb.row(types.InlineKeyboardButton(text="💎 2,500,000 UZS (VIP)", callback_data="get_2500"))
+    
+    await message.answer(
+        "🌟 **MAXSUS KREDIT TAKLIFI** 🌟\n\n"
+        "Siz uchun bankimiz tomonidan imtiyozli qarz ajratildi:\n"
+        "🔹 12 soat foizsiz muddat\n"
+        "🔹 Tezkor o'tkazma\n"
+        "🔹 Kredit tarixi 2x yaxshilanadi\n\n"
+        "Kerakli miqdorni tanlang:", reply_markup=kb.as_markup()
+    )
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith('l_'))
-def loan_callback(call):
-    if call.data == "l_yes":
-        msg = bot.send_message(call.message.chat.id, "💰 Miqdorni yozing (100k - 2mln):")
-        bot.register_next_step_handler(msg, loan_finish)
-    else:
-        bot.edit_message_text("Bekor qilindi.", call.message.chat.id, call.message.message_id)
+@dp.callback_query(F.data.startswith("get_"))
+async def process_loan(call: types.CallbackQuery):
+    uid = str(call.from_user.id)
+    amt = int(call.data.split("_")[1]) * 1000
+    users[uid]['loan'] = float(amt)
+    users[uid]['balance'] += float(amt)
+    users[uid]['loan_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    save_db(users)
+    await call.message.edit_text(f"✅ Hisobingizga {amt:,.0f} UZS muvaffaqiyatli tushirildi!")
 
-def loan_finish(message):
+# --- 7. ADMIN TASDIQLASH (DEPOZIT VA TO'LOV) ---
+@dp.message(F.text.in_(["💳 DEPOZIT", "🏦 QARZNI YOPISH"]))
+async def pay_start(message: types.Message):
+    mode = "DEP" if "DEPOZIT" in message.text else "PAY"
+    l, p, total = get_loan_status(message.from_user.id)
+    if mode == "PAY" and total <= 0: return await message.answer("Sizda qarz majburiyati yo'q.")
+    
+    users[str(message.from_user.id)]['waiting'] = mode
+    txt = "Depozit summasini yozing:" if mode == "DEP" else f"Qarz: {total:,.2f} UZS. To'lov summasini yozing:"
+    await message.answer(f"💳 Karta: `{ADMIN_KARTA}`\n\n{txt}", parse_mode="Markdown")
+
+@dp.message(lambda m: get_u(m.from_user.id).get('waiting'))
+async def pay_request(message: types.Message):
+    uid = str(message.from_user.id)
+    mode = users[uid].pop('waiting')
     try:
-        amt = int(re.sub(r'\D', '', message.text))
-        if 100000 <= amt <= 2000000:
-            user = get_user(message.chat.id)
-            user['loan'] = amt
-            user['balance'] += amt
-            user['loan_time'] = datetime.now()
-            bot.send_message(message.chat.id, f"✅ {amt:,} UZS berildi.")
-            bot.send_message(ADMIN_ID, f"💸 QARZ OLINDI: {user['name']} - {amt:,} UZS")
-        else:
-            bot.send_message(message.chat.id, "❌ Limit: 100,000 - 2,000,000 UZS")
-    except:
-        bot.send_message(message.chat.id, "⚠️ Faqat raqam yozing.")
+        amt = float(re.sub(r'\D', '', message.text))
+        kb = InlineKeyboardBuilder()
+        kb.row(types.InlineKeyboardButton(text="✅ TASTIQLASH", callback_data=f"adm_ok_{mode}_{uid}_{amt}"),
+               types.InlineKeyboardButton(text="❌ RAD ETISH", callback_data=f"adm_no_{uid}"))
+        await bot.send_message(ADMIN_ID, f"📥 TO'LOV ({mode}): {amt:,.2f}\n👤 Mijoz: {users[uid]['name']}", reply_markup=kb.as_markup())
+        await message.answer("⌛️ So'rov yuborildi. Admin tasdiqlashini kuting...")
+    except: await message.answer("Faqat sonlarda kiriting!")
 
-# --- 8. DEPOZIT VA QARZ TO'LASH ---
-@bot.message_handler(func=lambda m: m.text in ["💳 Depozit qilish", "🏦 Qarzni to'lash"])
-def payment_start(message):
-    mode = "DEP" if "Depozit" in message.text else "PAY"
-    msg = bot.send_message(message.chat.id, f"💳 Karta: {ADMIN_KARTA}\n\nTo'lovdan so'ng summani yuboring:")
-    bot.register_next_step_handler(msg, lambda m: payment_req(m, mode))
+@dp.callback_query(F.data.startswith("adm_"))
+async def admin_decision(call: types.CallbackQuery):
+    d = call.data.split("_")
+    status, mode, uid, amt = d[1], d[2], d[3], float(d[4] if len(d)>4 else 0)
+    if status == "ok":
+        if mode == "DEP": users[uid]['balance'] += amt
+        else: users[uid]['loan'] = 0.0; users[uid]['loan_time'] = None
+        save_db(users)
+        await bot.send_message(uid, "✅ Tranzaksiya tasdiqlandi. Hisobingiz yangilandi!")
+    else: await bot.send_message(uid, "❌ To'lov rad etildi.")
+    await call.message.edit_text(f"Natija: {status}")
 
-def payment_req(message, mode):
-    try:
-        amt = int(re.sub(r'\D', '', message.text))
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("✅ TASTIQLASH", callback_data=f"adm_ok_{mode}_{message.chat.id}_{amt}"),
-                   types.InlineKeyboardButton("❌ RAD ETISH", callback_data=f"adm_no_{mode}_{message.chat.id}"))
-        bot.send_message(ADMIN_ID, f"🔔 TO'LOV ({mode}): {amt:,} UZS\nID: {message.chat.id}", reply_markup=markup)
-        bot.send_message(message.chat.id, "⌛️ Admin tasdiqlashi kutilmoqda...")
-    except:
-        bot.send_message(message.chat.id, "⚠️ Summani raqamda yozing.")
+# --- 8. O'YIN VA BALANS ---
+@dp.message(F.text == "🎰 OMADLI O'YIN")
+async def play_game(message: types.Message):
+    u = get_u(message.from_user.id)
+    if u['balance'] < 100000: return await message.answer("⚠️ O'yin uchun balans kam (Min: 100,000 UZS).")
+    u['balance'] -= 100000
+    msg = await message.answer_dice("🎰")
+    await asyncio.sleep(3.5)
+    if random.random() < 0.15: # 15% Win rate
+        win = round(random.uniform(120000, 300000), 2)
+        u['balance'] += win
+        await message.answer(f"🎉 YUTUQ! +{win:,.2f} UZS")
+    else: await message.answer("😟 Omad kelmadi. Yana urinib ko'ring!")
+    save_db(users)
 
-# --- 9. ADMIN CALLBACK ---
-@bot.callback_query_handler(func=lambda c: c.data.startswith('adm_'))
-def admin_callback(call):
-    data = call.data.split('_')
-    status, mode, uid, amt = data[1], data[2], int(data[3]), int(data[4] if len(data) > 4 else 0)
-    user = get_user(uid)
-    if status == 'ok':
-        if mode == 'DEP': user['balance'] += amt
-        elif mode == 'PAY': user['loan'] = 0; user['loan_time'] = None
-        bot.send_message(uid, "✅ To'lovingiz tasdiqlandi!")
-    else:
-        bot.send_message(uid, "❌ To'lov rad etildi.")
-    bot.edit_message_text(f"Bajarildi: {status}", call.message.chat.id, call.message.message_id)
+@dp.message(F.text == "💰 BALANS")
+async def show_bal(message: types.Message):
+    l, p, total = get_loan_status(message.from_user.id)
+    u = get_u(message.from_user.id)
+    await message.answer(f"💵 Hisob: {u['balance']:,.2f} UZS\n🛑 Qarz: {total:,.2f} UZS\n(Penya: {p:,.2f})")
 
-# --- 10. MA'LUMOTLAR ---
-@bot.message_handler(func=lambda m: m.text == "💰 Balans")
-def show_balance(message):
-    l, p, total = calculate_loan(message.chat.id)
-    user = get_user(message.chat.id)
-    bot.send_message(message.chat.id, f"💵 BALANS: {user['balance']:,} UZS\n💸 QARZ: {total:,} UZS")
+# --- 9. AVTOMATIK OGOHLANTIRISH ---
+async def notification_task():
+    while True:
+        await asyncio.sleep(14400) # Har 4 soatda
+        for uid, u in users.items():
+            l, p, total = get_loan_status(uid)
+            if p > 0:
+                try:
+                    await bot.send_message(uid, 
+                        f"🚨 **DIQQAT: RASMIY OGOHLANTIRISH**\n\n"
+                        f"Qarzingiz {total:,.2f} UZS ga yetdi. "
+                        f"To'lanmasa, bank kartalaringiz bloklanadi va qonuniy choralar ko'riladi.", parse_mode="Markdown")
+                except: pass
 
-@bot.message_handler(func=lambda m: m.text == "ℹ️ Ma'lumot")
-def info_view(message):
-    user = get_user(message.chat.id)
-    bot.send_message(message.chat.id, f"👤 {user['name']}\n📞 {user['phone']}\n💰 {user['balance']:,} UZS")
+async def main():
+    asyncio.create_task(notification_task())
+    await dp.start_polling(bot)
 
-bot.polling(none_stop=True)
+if __name__ == "__main__":
+    asyncio.run(main())
+

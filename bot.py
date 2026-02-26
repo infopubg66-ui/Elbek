@@ -5,6 +5,7 @@ import json
 import os
 import re
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
@@ -19,16 +20,29 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- 2. MA'LUMOTLAR BAZASI ---
+# --- 2. PUL FORMATLASH (CHESTNIY MATEMATIKA) ---
+def f_money(amount):
+    return "{:,.2f}".format(float(amount)).replace(",", " ")
+
+# --- 3. MA'LUMOTLAR BAZASI ---
 def load_db():
     if os.path.exists(DB_FILE):
         with open(DB_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+            for uid in data:
+                data[uid]['balance'] = Decimal(str(data[uid].get('balance', 0)))
+                data[uid]['loan'] = Decimal(str(data[uid].get('loan', 0)))
+            return data
     return {}
 
 def save_db(data):
+    to_save = {}
+    for uid, val in data.items():
+        to_save[uid] = val.copy()
+        to_save[uid]['balance'] = float(val['balance'])
+        to_save[uid]['loan'] = float(val['loan'])
     with open(DB_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+        json.dump(to_save, f, indent=4, ensure_ascii=False)
 
 users = load_db()
 
@@ -37,174 +51,152 @@ def get_u(uid):
     if uid not in users:
         users[uid] = {
             'name': '', 'phone': '', 'reg': False, 
-            'balance': 0.0, 'loan': 0.0, 'loan_time': None
+            'balance': Decimal('0.0'), 'loan': Decimal('0.0'), 'loan_time': None
         }
     return users[uid]
 
-# --- 3. HISOB-KITOB VA PENYA ---
-def get_loan_status(uid):
+# --- 4. QARZ VA FOIZ HISOBI ---
+def get_finance(uid):
     u = get_u(uid)
-    if not u['loan'] or u['loan'] <= 0: return 0.0, 0.0, 0.0
+    if not u['loan'] or u['loan'] <= 0:
+        return Decimal('0.0'), Decimal('0.0'), Decimal('0.0')
+    
     l_time = datetime.strptime(u['loan_time'], "%Y-%m-%d %H:%M:%S")
     passed_hours = (datetime.now() - l_time).total_seconds() / 3600
-    penya = 0.0
+    
+    penya = Decimal('0.0')
     if passed_hours > 12:
-        # Har soatga 5% penya (Shiddatli o'sish)
-        penya = round(u['loan'] * 0.05 * (passed_hours - 12), 2)
-    return float(u['loan']), penya, round(u['loan'] + penya, 2)
+        penya = (u['loan'] * Decimal('0.05') * Decimal(str(passed_hours - 12))).quantize(Decimal('0.01'))
+        
+    total = (u['loan'] + penya).quantize(Decimal('0.01'))
+    return u['loan'], penya, total
 
-# --- 4. KLAVIATURALAR ---
-def main_menu():
+# --- 5. KLAVIATURALAR ---
+def main_kb():
     builder = ReplyKeyboardBuilder()
     builder.row(types.KeyboardButton(text="🎰 OMADLI O'YIN"), types.KeyboardButton(text="💰 BALANS"))
     builder.row(types.KeyboardButton(text="✨ TEZKOR QARZ OLISH ✨"))
     builder.row(types.KeyboardButton(text="💳 DEPOZIT"), types.KeyboardButton(text="🏦 QARZNI YOPISH"))
     return builder.as_markup(resize_keyboard=True)
 
-# --- 5. RO'YXATDAN O'TISH (QAT'IY TIZIM) ---
+# --- 6. START VA REGISTRATSIYA (FAQAT TUGMA BILAN) ---
 @dp.message(Command("start"))
-async def start_cmd(message: types.Message):
+async def cmd_start(message: types.Message):
     u = get_u(message.from_user.id)
     if not u['reg']:
-        await message.answer("🏛 **MARKAZIY BANK TIZIMI**\n\nXizmatlardan foydalanish uchun Familiya va Ismingizni yozing:")
+        await message.answer("🏛 **BANKNAZORAT TIZIMI**\n\nIsm va Familiyangizni yuboring:")
     else:
-        await message.answer("Xush kelibsiz! Bank xizmatlaridan foydalanishingiz mumkin.", reply_markup=main_menu())
+        await message.answer("Xush kelibsiz!", reply_markup=main_kb())
 
 @dp.message(lambda m: not get_u(m.from_user.id)['reg'] and not m.contact)
-async def process_reg(message: types.Message):
+async def reg_process(message: types.Message):
     uid = str(message.from_user.id)
     if not users[uid]['name']:
         users[uid]['name'] = message.text
-        save_db(users)
-        
-        builder = ReplyKeyboardBuilder()
-        builder.row(types.KeyboardButton(text="📱 RAQAMNI TASDIQLASH", request_contact=True))
-        await message.answer(
-            f"Rahmat, {message.text}!\nEndi pastdagi tugmani bosib telefon raqamingizni tasdiqlang.\n\n"
-            "⚠️ *Eslatma: Raqamni qo'lda yozish taqiqlanadi!*", 
-            reply_markup=builder.as_markup(resize_keyboard=True), parse_mode="Markdown"
-        )
+        kb = ReplyKeyboardBuilder().row(types.KeyboardButton(text="📱 RAQAMNI TASDIQLASH", request_contact=True))
+        await message.answer("Endi raqamingizni tasdiqlang:", reply_markup=kb.as_markup(resize_keyboard=True))
     else:
-        await message.answer("⚠️ Iltimos, pastdagi tugmani bosing!")
+        await message.answer("⚠️ Pastdagi tugmani bosing!")
 
 @dp.message(F.contact)
-async def contact_handler(message: types.Message):
+async def reg_contact(message: types.Message):
     uid = str(message.from_user.id)
     if message.contact.user_id == message.from_user.id:
         users[uid]['phone'] = message.contact.phone_number
         users[uid]['reg'] = True
         save_db(users)
-        await message.answer("✅ Shaxsingiz tasdiqlandi. Kredit limiti faollashtirildi.", reply_markup=main_menu())
-        await bot.send_message(ADMIN_ID, f"🔔 YANGI MIJOZ: {users[uid]['name']} | {users[uid]['phone']}")
+        await message.answer("✅ Muvaffaqiyatli ro'yxatdan o'tdingiz!", reply_markup=main_kb())
     else:
         await message.answer("❌ Faqat o'zingizning kontaktingizni yuboring!")
 
-# --- 6. JOZIBADOR QARZ OLISH ---
-@dp.message(F.text == "✨ TEZKOR QARZ OLISH ✨")
-async def loan_offer(message: types.Message):
+# --- 7. O'YIN (KIRISH: 100K, MAX YUTUQ: 105K) ---
+@dp.message(F.text == "🎰 OMADLI O'YIN")
+async def game_start(message: types.Message):
     u = get_u(message.from_user.id)
-    if u['loan'] > 0:
-        return await message.answer("❌ Sizda to'lanmagan qarz mavjud. Avvalgisini yopishingiz shart!")
+    bet = Decimal('100000.0')
+
+    if u['balance'] < bet:
+        return await message.answer(f"⚠️ Balans yetarli emas! O'yin narxi: {f_money(bet)} UZS")
+
+    u['balance'] -= bet
+    save_db(users)
     
+    msg = await message.answer_dice("🎰")
+    await asyncio.sleep(4)
+
+    if random.random() < 0.35: # 35% yutish imkoniyati
+        win = Decimal(str(random.uniform(101000, 105000))).quantize(Decimal('0.01'))
+        u['balance'] += win
+        await message.answer(f"🎉 G'ALABA!\n✅ Yutdingiz: +{f_money(win)} UZS\n💰 Balans: {f_money(u['balance'])} UZS")
+    else:
+        await message.answer(f"😟 Omad kelmadi.\n💸 Yo'qotildi: {f_money(bet)} UZS\n💰 Qolgan balans: {f_money(u['balance'])} UZS")
+    save_db(users)
+
+# --- 8. QARZ VA ADMIN TASDIQLASHI ---
+@dp.message(F.text == "✨ TEZKOR QARZ OLISH ✨")
+async def loan_menu(message: types.Message):
+    u = get_u(message.from_user.id)
+    if u['loan'] > 0: return await message.answer("🛑 Faol qarzingiz bor!")
     kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="💰 500,000 UZS", callback_data="get_500"))
-    kb.row(types.InlineKeyboardButton(text="💰 1,000,000 UZS", callback_data="get_1000"))
-    kb.row(types.InlineKeyboardButton(text="💎 2,500,000 UZS (VIP)", callback_data="get_2500"))
-    
-    await message.answer(
-        "🌟 **MAXSUS KREDIT TAKLIFI** 🌟\n\n"
-        "Siz uchun bankimiz tomonidan imtiyozli qarz ajratildi:\n"
-        "🔹 12 soat foizsiz muddat\n"
-        "🔹 Tezkor o'tkazma\n"
-        "🔹 Kredit tarixi 2x yaxshilanadi\n\n"
-        "Kerakli miqdorni tanlang:", reply_markup=kb.as_markup()
-    )
+    kb.row(types.InlineKeyboardButton(text="💰 500 000 UZS", callback_data="get_500"))
+    kb.row(types.InlineKeyboardButton(text="💰 1 000 000 UZS", callback_data="get_1000"))
+    await message.answer("Kredit miqdorini tanlang:", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("get_"))
-async def process_loan(call: types.CallbackQuery):
+async def get_loan(call: types.CallbackQuery):
     uid = str(call.from_user.id)
-    amt = int(call.data.split("_")[1]) * 1000
-    users[uid]['loan'] = float(amt)
-    users[uid]['balance'] += float(amt)
+    amt = Decimal(call.data.split("_")[1]) * 1000
+    users[uid]['loan'] = amt
+    users[uid]['balance'] += amt
     users[uid]['loan_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     save_db(users)
-    await call.message.edit_text(f"✅ Hisobingizga {amt:,.0f} UZS muvaffaqiyatli tushirildi!")
+    await call.message.edit_text(f"✅ {f_money(amt)} UZS hisobingizga tushdi!")
 
-# --- 7. ADMIN TASDIQLASH (DEPOZIT VA TO'LOV) ---
 @dp.message(F.text.in_(["💳 DEPOZIT", "🏦 QARZNI YOPISH"]))
 async def pay_start(message: types.Message):
     mode = "DEP" if "DEPOZIT" in message.text else "PAY"
-    l, p, total = get_loan_status(message.from_user.id)
-    if mode == "PAY" and total <= 0: return await message.answer("Sizda qarz majburiyati yo'q.")
+    l, p, total = get_finance(message.from_user.id)
+    if mode == "PAY" and total <= 0: return await message.answer("Qarzingiz yo'q.")
     
-    users[str(message.from_user.id)]['waiting'] = mode
-    txt = "Depozit summasini yozing:" if mode == "DEP" else f"Qarz: {total:,.2f} UZS. To'lov summasini yozing:"
-    await message.answer(f"💳 Karta: `{ADMIN_KARTA}`\n\n{txt}", parse_mode="Markdown")
+    users[str(message.from_user.id)]['wait_mode'] = mode
+    txt = "To'lov summasini kiriting:" if mode == "DEP" else f"To'lov miqdori: {f_money(total)} UZS"
+    await message.answer(f"💳 Karta: `{ADMIN_KARTA}`\n{txt}")
 
-@dp.message(lambda m: get_u(m.from_user.id).get('waiting'))
-async def pay_request(message: types.Message):
+@dp.message(lambda m: get_u(m.from_user.id).get('wait_mode'))
+async def pay_confirm(message: types.Message):
     uid = str(message.from_user.id)
-    mode = users[uid].pop('waiting')
+    mode = users[uid].pop('wait_mode')
     try:
-        amt = float(re.sub(r'\D', '', message.text))
+        amt = Decimal(re.sub(r'\D', '', message.text))
         kb = InlineKeyboardBuilder()
-        kb.row(types.InlineKeyboardButton(text="✅ TASTIQLASH", callback_data=f"adm_ok_{mode}_{uid}_{amt}"),
-               types.InlineKeyboardButton(text="❌ RAD ETISH", callback_data=f"adm_no_{uid}"))
-        await bot.send_message(ADMIN_ID, f"📥 TO'LOV ({mode}): {amt:,.2f}\n👤 Mijoz: {users[uid]['name']}", reply_markup=kb.as_markup())
-        await message.answer("⌛️ So'rov yuborildi. Admin tasdiqlashini kuting...")
-    except: await message.answer("Faqat sonlarda kiriting!")
+        kb.row(types.InlineKeyboardButton(text="✅ TASDIQLASH", callback_data=f"ok_{mode}_{uid}_{amt}"),
+               types.InlineKeyboardButton(text="❌ RAD ETISH", callback_data=f"no_{uid}"))
+        await bot.send_message(ADMIN_ID, f"📥 TO'LOV: {f_money(amt)}\n👤 Mijoz: {users[uid]['name']}", reply_markup=kb.as_markup())
+        await message.answer("⌛️ Tekshirilmoqda...")
+    except: await message.answer("Faqat raqam yozing!")
 
-@dp.callback_query(F.data.startswith("adm_"))
-async def admin_decision(call: types.CallbackQuery):
+@dp.callback_query(F.data.startswith(("ok_", "no_")))
+async def admin_res(call: types.CallbackQuery):
     d = call.data.split("_")
-    status, mode, uid, amt = d[1], d[2], d[3], float(d[4] if len(d)>4 else 0)
+    status, mode, uid = d[0], d[1], d[2]
+    amt = Decimal(d[3]) if len(d) > 3 else Decimal('0.0')
     if status == "ok":
         if mode == "DEP": users[uid]['balance'] += amt
-        else: users[uid]['loan'] = 0.0; users[uid]['loan_time'] = None
+        else: users[uid]['loan'] = Decimal('0.0'); users[uid]['loan_time'] = None
         save_db(users)
-        await bot.send_message(uid, "✅ Tranzaksiya tasdiqlandi. Hisobingiz yangilandi!")
+        await bot.send_message(uid, "✅ To'lov tasdiqlandi!")
     else: await bot.send_message(uid, "❌ To'lov rad etildi.")
     await call.message.edit_text(f"Natija: {status}")
 
-# --- 8. O'YIN VA BALANS ---
-@dp.message(F.text == "🎰 OMADLI O'YIN")
-async def play_game(message: types.Message):
-    u = get_u(message.from_user.id)
-    if u['balance'] < 100000: return await message.answer("⚠️ O'yin uchun balans kam (Min: 100,000 UZS).")
-    u['balance'] -= 100000
-    msg = await message.answer_dice("🎰")
-    await asyncio.sleep(3.5)
-    if random.random() < 0.15: # 15% Win rate
-        win = round(random.uniform(120000, 300000), 2)
-        u['balance'] += win
-        await message.answer(f"🎉 YUTUQ! +{win:,.2f} UZS")
-    else: await message.answer("😟 Omad kelmadi. Yana urinib ko'ring!")
-    save_db(users)
-
+# --- 9. BALANS ---
 @dp.message(F.text == "💰 BALANS")
 async def show_bal(message: types.Message):
-    l, p, total = get_loan_status(message.from_user.id)
+    l, p, total = get_finance(message.from_user.id)
     u = get_u(message.from_user.id)
-    await message.answer(f"💵 Hisob: {u['balance']:,.2f} UZS\n🛑 Qarz: {total:,.2f} UZS\n(Penya: {p:,.2f})")
-
-# --- 9. AVTOMATIK OGOHLANTIRISH ---
-async def notification_task():
-    while True:
-        await asyncio.sleep(14400) # Har 4 soatda
-        for uid, u in users.items():
-            l, p, total = get_loan_status(uid)
-            if p > 0:
-                try:
-                    await bot.send_message(uid, 
-                        f"🚨 **DIQQAT: RASMIY OGOHLANTIRISH**\n\n"
-                        f"Qarzingiz {total:,.2f} UZS ga yetdi. "
-                        f"To'lanmasa, bank kartalaringiz bloklanadi va qonuniy choralar ko'riladi.", parse_mode="Markdown")
-                except: pass
+    await message.answer(f"👤 Mijoz: {u['name']}\n💵 Balans: {f_money(u['balance'])} UZS\n🛑 Qarz: {f_money(total)} UZS")
 
 async def main():
-    asyncio.create_task(notification_task())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-

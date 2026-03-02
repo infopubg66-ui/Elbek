@@ -8,15 +8,16 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 # --- SOZLAMALAR ---
-TOKEN = "8729423224:AAGKzoZIxqlog3an5aWGTzMauczdZOUmvSs
+TOKEN = "8729423224:AAGKzoZIxqlog3an5aWGTzMauczdZOUmvSs"
 OPENAI_API_KEY = "Sk-proj-o0E7cTS9GTCTW1T2VzvKcUMQDraH8JOlOp9yATTZi2cfxJyBn33OnZcUmxqszB5eN7AB3KpWZ7T3BlbkFJhbjZettT0b6LgTnGkaa01GX-XihLIekL7YXSq9sediLiObPjE0Tf3tmEZDeQ-turlPTdxmjRMA"
-ADMIN_USER = "@TEZGO_001"
+ADMIN_ID = "7013452402"  # Siz bergan yangi ID joylandi
+ADMIN_USERNAME = "@TEZGO_001"
 FOUNDER = "HAYDAROV ELBEK"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- MA'LUMOTLAR BAZASI ---
+# --- DATABASE ---
 def init_db():
     conn = sqlite3.connect('maktab_platforma.db')
     cursor = conn.cursor()
@@ -27,7 +28,6 @@ def init_db():
 
 init_db()
 
-# --- HOLATLAR ---
 class AppState(StatesGroup):
     name = State()
     grade = State()
@@ -45,24 +45,23 @@ def main_menu():
 
 def subjects_kb():
     subjects = [
-        [KeyboardButton(text="🇬🇧 Ingliz tili"), KeyboardButton(text="🔢 Matematika")],
-        [KeyboardButton(text="⚛️ Fizika"), KeyboardButton(text="📜 Tarix")],
-        [KeyboardButton(text="☣️ Biologiya"), KeyboardButton(text="🌍 Geografiya")],
+        [KeyboardButton(text="🔢 Matematika"), KeyboardButton(text="🇬🇧 Ingliz tili")],
+        [KeyboardButton(text="⚛️ Fizika"), KeyboardButton(text="☣️ Biologiya")],
+        [KeyboardButton(text="📜 Tarix"), KeyboardButton(text="🧪 Kimyo")],
+        [KeyboardButton(text="💻 Informatika"), KeyboardButton(text="🌍 Geografiya")],
+        [KeyboardButton(text="🇺🇿 Ona tili"), KeyboardButton(text="📚 Adabiyot")],
         [KeyboardButton(text="⬅️ Orqaga")]
     ]
     return ReplyKeyboardMarkup(keyboard=subjects, resize_keyboard=True)
 
-# --- CHATGPT (AI) BILAN ALOQA ---
+# --- AI LOGIC (GPT-3.5) ---
 async def ai_tutor(subject, user_message):
     url = "https://api.openai.com/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {OPENAI_API_KEY}"
-    }
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
     payload = {
         "model": "gpt-3.5-turbo",
         "messages": [
-            {"role": "system", "content": f"Siz 31-maktab o'quvchilari uchun {subject} fanidan aqlli va mehribon o'qituvchisiz. Bot asoschisi: {FOUNDER}. Maqsadingiz - fanni 0 dan boshlab, juda sodda va tushunarli tilda o'rgatish. Yoshlarni ilmga qiziqtiring va har doim motivatsiya bering."},
+            {"role": "system", "content": f"Siz 31-maktab o'quvchilari uchun {subject} fanidan mukammal o'qituvchisiz. Asoschi: {FOUNDER}. Maqsadingiz yoshlarni ilmga qiziqtirish va 0 dan o'rgatish."},
             {"role": "user", "content": user_message}
         ]
     }
@@ -72,14 +71,14 @@ async def ai_tutor(subject, user_message):
                 if resp.status == 200:
                     data = await resp.json()
                     return data['choices'][0]['message']['content']
-                return "Hozircha AI o'qituvchi band. Birozdan so'ng urinib ko'ring (API balansini tekshiring)."
+                return "AI hozirda band, birozdan so'ng urinib ko'ring."
         except:
             return "Ulanishda xatolik yuz berdi."
 
-# --- BOT BUYRUQLARI ---
+# --- HANDLERS ---
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
-    await message.answer(f"Assalomu alaykum! {FOUNDER} tomonidan yaratilgan 31-maktab ta'lim botiga xush kelibsiz! ✨\n\nBu yerda barcha fanlarni 0 dan o'rganishingiz mumkin.\n\nRo'yxatdan o'tish uchun Ism-Familiyangizni yozing:")
+    await message.answer(f"Assalomu alaykum! {FOUNDER} tomonidan yaratilgan universal ta'lim botiga xush kelibsiz! ✨\n\nIsm-Familiyangizni kiriting:")
     await state.set_state(AppState.name)
 
 @dp.message(AppState.name)
@@ -99,32 +98,34 @@ async def get_grade(message: types.Message, state: FSMContext):
 @dp.message(AppState.phone, F.contact)
 async def save_user(message: types.Message, state: FSMContext):
     data = await state.get_data()
+    name = data['name']
+    grade = data['grade']
+    phone = message.contact.phone_number
+
+    # Bazaga yozish
     conn = sqlite3.connect('maktab_platforma.db')
     cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO users VALUES (?, ?, ?, ?)", 
-                   (message.from_user.id, data['name'], data['grade'], message.contact.phone_number))
+    cursor.execute("INSERT OR REPLACE INTO users VALUES (?, ?, ?, ?)", (message.from_user.id, name, grade, phone))
     conn.commit()
     conn.close()
-    await message.answer(f"Tabriklaymiz {data['name']}! Ro'yxatdan o'tdingiz. Bilim olishni boshlaymizmi? 🚀", reply_markup=main_menu())
+
+    # ADMIN-ga xabar (ID: 7013452402)
+    admin_msg = (f"🔔 **Yangi o'quvchi!**\n\n👤 Ism: {name}\n🏫 Sinf: {grade}\n📞 Tel: {phone}")
+    try:
+        await bot.send_message(ADMIN_ID, admin_msg)
+    except:
+        pass
+
+    await message.answer(f"Tabriklaymiz {name}! O'rganishni boshlaymiz!", reply_markup=main_menu())
     await state.clear()
 
 @dp.message(F.text == "ℹ️ Bot haqida")
 async def about(message: types.Message):
-    await message.answer(f"🏗 **Bot asoschisi:** {FOUNDER}\n👨‍💻 **Admin:** {ADMIN_USER}\n\nUshbu bot yoshlarni o'qishga jalb qilish va maktab fanlarini 0 dan mukammal o'rganishlari uchun yaratilgan.")
-
-@dp.message(F.text == "👤 Profilim")
-async def profile(message: types.Message):
-    conn = sqlite3.connect('maktab_platforma.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE id = ?", (message.from_user.id,))
-    u = cursor.fetchone()
-    conn.close()
-    if u:
-        await message.answer(f"👤 **Profilingiz:**\n\nIsm: {u[1]}\nSinf: {u[2]}\nTel: {u[3]}")
+    await message.answer(f"🏗 Bot asoschisi: {FOUNDER}\n👨‍💻 Admin: {ADMIN_USERNAME}\n🌟 Yoshlarni 0 dan o'qitish platformasi.")
 
 @dp.message(F.text == "📚 Fan tanlash va O'rganish")
-async def choose_sub(message: types.Message, state: FSMContext):
-    await message.answer("Qaysi fanni o'rganishni istaysiz?", reply_markup=subjects_kb())
+async def choose_subject(message: types.Message, state: FSMContext):
+    await message.answer("Fanni tanlang:", reply_markup=subjects_kb())
     await state.set_state(AppState.subject)
 
 @dp.message(AppState.subject)
@@ -134,23 +135,23 @@ async def start_learning(message: types.Message, state: FSMContext):
         await state.clear()
         return
     await state.update_data(chosen_sub=message.text)
-    await message.answer(f"Siz {message.text} fanini tanladingiz. Savolingizni bering yoki 'Menga ushbu fanni 0 dan tushuntir' deb yozing!", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Orqaga")]], resize_keyboard=True))
+    await message.answer(f"{message.text} fanidan savollaringizni bering!", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Orqaga")]], resize_keyboard=True))
     await state.set_state(AppState.learning)
 
 @dp.message(AppState.learning)
-async def learning_process(message: types.Message, state: FSMContext):
+async def chat_learning(message: types.Message, state: FSMContext):
     if message.text == "⬅️ Orqaga":
         await message.answer("Fanlar ro'yxati", reply_markup=subjects_kb())
         await state.set_state(AppState.subject)
         return
     
     data = await state.get_data()
-    msg = await message.answer("O'qituvchi tayyorlanyapti... ⏳")
+    load = await message.answer("O'qituvchi tayyorlanmoqda... ⏳")
     response = await ai_tutor(data['chosen_sub'], message.text)
-    await msg.edit_text(response)
+    await load.edit_text(response)
 
 async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())

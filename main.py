@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 # --- SOZLAMALAR ---
-TOKEN = "8705296063:AAEKfTBfe4_f3gRmdYLcMKQymMeqyIlEk24"
+TOKEN = "8729423224:AAGKzoZIxqlog3an5aWGTzMauczdZOUmvSs
 OPENAI_API_KEY = "Sk-proj-o0E7cTS9GTCTW1T2VzvKcUMQDraH8JOlOp9yATTZi2cfxJyBn33OnZcUmxqszB5eN7AB3KpWZ7T3BlbkFJhbjZettT0b6LgTnGkaa01GX-XihLIekL7YXSq9sediLiObPjE0Tf3tmEZDeQ-turlPTdxmjRMA"
 ADMIN_USER = "@TEZGO_001"
 FOUNDER = "HAYDAROV ELBEK"

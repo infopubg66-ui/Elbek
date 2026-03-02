@@ -1,84 +1,136 @@
 import asyncio
+import sqlite3
+import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 # --- SOZLAMALAR ---
 TOKEN = "8705296063:AAEKfTBfe4_f3gRmdYLcMKQymMeqyIlEk24"
+OPENAI_API_KEY = "Sk-proj-o0E7cTS9GTCTW1T2VzvKcUMQDraH8JOlOp9yATTZi2cfxJyBn33OnZcUmxqszB5eN7AB3KpWZ7T3BlbkFJhbjZettT0b6LgTnGkaa01GX-XihLIekL7YXSq9sediLiObPjE0Tf3tmEZDeQ-turlPTdxmjRMA"
 ADMIN_USER = "@TEZGO_001"
-ADMIN_ID = 5271810793  # O'z ID raqamingiz
+FOUNDER = "HAYDAROV ELBEK"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- HOLATLAR ---
-class ShopState(StatesGroup):
-    village = State()
-    menu = State()
-    qty = State()
+# --- DATABASE ---
+def init_db():
+    conn = sqlite3.connect('maktab_platforma.db')
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users 
+                      (id INTEGER PRIMARY KEY, name TEXT, grade TEXT, phone TEXT)''')
+    conn.commit()
+    conn.close()
 
-# --- MAHSULOTLAR (Uzum narxi + 5000 so'm) ---
-ITEMS = {
-    "🍫 Shokolad (25,000 UZS)": {"price": 25000, "img": "https://images.uzum.uz/cl9v39ln7at6uobba6lg/original.jpg"},
-    "🥤 Flash (20,000 UZS)": {"price": 20000, "img": "https://images.uzum.uz/cl1m1ln6sfhsc0ulv6rg/original.jpg"},
-    "🥤 Coca-Cola (15,000 UZS)": {"price": 15000, "img": "https://images.uzum.uz/ckp520cvutv4veof9tkg/original.jpg"}
-}
+init_db()
 
-# --- KLAVIATURALAR ---
-v_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Cholyunus")], [KeyboardButton(text="Chol-Miraxamdam")]], resize_keyboard=True)
-m_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="🛍 Maxsulotlar")], 
-    [KeyboardButton(text="👨‍💻 Admin bilan bog'lanish")]
-], resize_keyboard=True)
+class AppState(StatesGroup):
+    name = State()
+    grade = State()
+    phone = State()
+    subject = State()
+    learning = State()
 
-# --- BOT LOGIKASI ---
+# --- KEYBOARDS ---
+def main_menu():
+    kb = [
+        [KeyboardButton(text="📚 Fan tanlash va O'rganish")],
+        [KeyboardButton(text="👤 Profilim"), KeyboardButton(text="ℹ️ Bot haqida")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+def subjects_kb():
+    subjects = [
+        [KeyboardButton(text="🇬🇧 Ingliz tili"), KeyboardButton(text="🔢 Matematika")],
+        [KeyboardButton(text="⚛️ Fizika"), KeyboardButton(text="📜 Tarix")],
+        [KeyboardButton(text="☣️ Biologiya"), KeyboardButton(text="🌍 Geografiya")],
+        [KeyboardButton(text="⬅️ Orqaga")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=subjects, resize_keyboard=True)
+
+# --- AI LOGIC ---
+async def ai_tutor(subject, user_message):
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    payload = {
+        "model": "gpt-3.5-turbo",
+        "messages": [
+            {"role": "system", "content": f"Siz 31-maktab o'quvchilari uchun {subject} fanidan aqlli o'qituvchisiz. Maqsadingiz - fanni 0 dan, juda sodda tilda o'rgatish va yoshlarni o'qishga jalb qilish. Har doim rag'batlantiruvchi so'zlar ishlating."},
+            {"role": "user", "content": user_message}
+        ]
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data['choices'][0]['message']['content']
+            return "AI hozirda band, iltimos birozdan so'ng yozing."
+
+# --- HANDLERS ---
 @dp.message(CommandStart())
-async def start(message: types.Message, state: FSMContext):
-    await message.answer("Xush kelibsiz! Qishlog'ingizni tanlang:", reply_markup=v_kb)
-    await state.set_state(ShopState.village)
+async def cmd_start(message: types.Message, state: FSMContext):
+    await message.answer(f"Assalomu alaykum! 31-maktabning universal ta'lim botiga xush kelibsiz! 🌟\n\nBot asoschisi: {FOUNDER}\nRo'yxatdan o'tish uchun Ism-Familiyangizni kiriting:")
+    await state.set_state(AppState.name)
 
-@dp.message(ShopState.village)
-async def set_v(message: types.Message, state: FSMContext):
-    await state.update_data(v=message.text)
-    await message.answer(f"Tanlandi: {message.text}\nMinimal buyurtma: 50,000 UZS\nYetkazib berish: 2-3 kun.", reply_markup=m_kb)
-    await state.set_state(ShopState.menu)
+@dp.message(AppState.name)
+async def get_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    grades = [[KeyboardButton(text=f"{i}-sinf")] for i in range(5, 12)]
+    await message.answer("Sinfingizni tanlang:", reply_markup=ReplyKeyboardMarkup(keyboard=grades, resize_keyboard=True))
+    await state.set_state(AppState.grade)
 
-@dp.message(F.text == "👨‍💻 Admin bilan bog'lanish")
-async def to_admin(message: types.Message):
-    await message.answer(f"Savollar bo'yicha adminga yozing: {ADMIN_USER}")
+@dp.message(AppState.grade)
+async def get_grade(message: types.Message, state: FSMContext):
+    await state.update_data(grade=message.text)
+    await message.answer("Telefon raqamingizni yuboring:", 
+                         reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📱 Raqamni ulash", request_contact=True)]], resize_keyboard=True))
+    await state.set_state(AppState.phone)
 
-@dp.message(F.text == "🛍 Maxsulotlar")
-async def show_items(message: types.Message):
-    for name, data in ITEMS.items():
-        ikb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Sotib olish", callback_data=f"buy_{name}")]])
-        await message.answer_photo(photo=data['img'], caption=name, reply_markup=ikb)
+@dp.message(AppState.phone, F.contact)
+async def save_user(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    conn = sqlite3.connect('maktab_platforma.db')
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO users VALUES (?, ?, ?, ?)", 
+                   (message.from_user.id, data['name'], data['grade'], message.contact.phone_number))
+    conn.commit()
+    conn.close()
+    await message.answer(f"Tabriklaymiz {data['name']}! Siz bilimlar olamiga kirdingiz. 🚀", reply_markup=main_menu())
+    await state.clear()
 
-@dp.callback_query(F.data.startswith("buy_"))
-async def ask_qty(call: types.CallbackQuery, state: FSMContext):
-    name = call.data.split("_")[1]
-    await state.update_data(item=name, price=ITEMS[name]['price'])
-    await call.message.answer(f"{name} dan nechta kerak? (Faqat raqam)")
-    await state.set_state(ShopState.qty)
+@dp.message(F.text == "ℹ️ Bot haqida")
+async def about(message: types.Message):
+    await message.answer(f"🏗 Bot asoschisi: {FOUNDER}\n👨‍💻 Admin: {ADMIN_USER}\n\nUshbu bot 31-maktab o'quvchilari uchun barcha fanlarni 0 dan o'rganishga yordam beradi.")
 
-@dp.message(ShopState.qty)
-async def finish(message: types.Message, state: FSMContext):
-    if not message.text.isdigit():
-        return await message.answer("Raqam yozing!")
+@dp.message(F.text == "📚 Fan tanlash va O'rganish")
+async def choose_subject(message: types.Message, state: FSMContext):
+    await message.answer("Qaysi fanni o'rganmoqchisiz? Tanlang:", reply_markup=subjects_kb())
+    await state.set_state(AppState.subject)
+
+@dp.message(AppState.subject)
+async def start_learning(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Orqaga":
+        await message.answer("Asosiy menyu", reply_markup=main_menu())
+        await state.clear()
+        return
+    await state.update_data(chosen_sub=message.text)
+    await message.answer(f"Siz {message.text} fanini tanladingiz. Savollaringizni bering yoki 'Men 0 dan o'rganmoqchiman' deb yozing!", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Orqaga")]], resize_keyboard=True))
+    await state.set_state(AppState.learning)
+
+@dp.message(AppState.learning)
+async def chat_learning(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Orqaga":
+        await message.answer("Fanlar ro'yxati", reply_markup=subjects_kb())
+        await state.set_state(AppState.subject)
+        return
     
     data = await state.get_data()
-    total = int(message.text) * data['price']
-    
-    if total < 50000:
-        return await message.answer(f"Kam! Minimal 50,000 UZS bo'lishi kerak. Sizda: {total:,} UZS")
-
-    order_text = (f"🔔 Yangi buyurtma!\n📍 Qishloq: {data['v']}\n🛍 {data['item']}: {message.text} ta\n"
-                  f"💰 Jami: {total:,} UZS\n👤 Mijoz: @{message.from_user.username}")
-    
-    await bot.send_message(ADMIN_ID, order_text)
-    await message.answer(f"Rahmat! Buyurtma qabul qilindi ({total:,} UZS). Admin bog'lanadi.", reply_markup=m_kb)
-    await state.set_state(ShopState.menu)
+    load = await message.answer("O'qituvchi o'ylayapti... 🧠")
+    response = await ai_tutor(data['chosen_sub'], message.text)
+    await load.edit_text(response)
 
 async def main():
     await dp.start_polling(bot)
